@@ -126,6 +126,7 @@ class DAGState(State):
         self,
         rule_indices: torch.LongTensor,
         arg_mask: BoolTensor,
+        arg_order: LongTensor,
     ) -> Self:
         assert len(rule_indices) > 0
         modifying = torch.arange(self.batch_size, device=self.vars.device)
@@ -133,6 +134,7 @@ class DAGState(State):
         assert self.num_actions[modifying].max() < self.max_actions
         rule_indices = rule_indices[modifying]
         arg_mask = arg_mask[modifying]
+        arg_order = arg_order[modifying]
         vars = self.vars[modifying]
         num_vars = self.num_vars[modifying]
         num_actions = self.num_actions[modifying]
@@ -144,6 +146,7 @@ class DAGState(State):
         for i, rule_idx in enumerate(rule_indices):
             rule = self.rules[rule_idx.item()]
             args = vars[i, arg_mask[i]]
+            args = args[arg_order[i, : args.shape[0]]]
             new_vars[i] = rule(args.unsqueeze(0)).squeeze(0)
 
         # Add the new variable and rule nodes
