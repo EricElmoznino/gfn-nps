@@ -128,39 +128,54 @@ class DAGState(State):
         arg_mask: BoolTensor,
         arg_order: LongTensor,
     ) -> Self:
-        assert len(rule_indices) > 0
-        modifying = torch.arange(self.batch_size, device=self.vars.device)
-        modifying = modifying[rule_indices != -1]
-        assert self.num_actions[modifying].max() < self.max_actions
-        rule_indices = rule_indices[modifying]
-        arg_mask = arg_mask[modifying]
-        arg_order = arg_order[modifying]
-        vars = self.vars[modifying]
-        num_vars = self.num_vars[modifying]
-        num_actions = self.num_actions[modifying]
+        sample_indices = torch.arange(self.batch_size, device=self.vars.device)
+        updated_indices = sample_indices[rule_indices != -1]
+        assert len(updated_indices) > 0
+        assert self.num_actions[updated_indices].max() < self.max_actions
 
         # Apply the rules
-        # *Note*: This isn't batched, but I don't think
-        # it actually is possible to batch it.
-        new_vars = torch.zeros_like(vars[:, 0])
-        for i, rule_idx in enumerate(rule_indices):
-            rule = self.rules[rule_idx.item()]
-            args = vars[i, arg_mask[i]]
-            args = args[arg_order[i, : args.shape[0]]]
-            new_vars[i] = rule(args.unsqueeze(0)).squeeze(0)
+        # *Note*: We run each rule on all its inputs. This looks
+        # serial, but it will actually parallelize automatically if
+        # the rules are on different GPUs because GPU operations are
+        # asynchronous.
+        def get_rule_args(indices: LongTensor) -> FloatTensor:
+            if len(indices) == 0:
+                return None
+            args = self.vars[indices]
+            args = args[arg_mask[indices]]
+            args = args[arg_order[indices, : args.shape[1]]]
+            return args
 
-        # Add the new variable and rule nodes
-        self.vars[modifying, num_vars] = new_vars
-        self.applied_rules[modifying, num_actions] = rule_indices
+        rule_sample_indices = [sample_indices[rule_indices == i] 
+                               for i in range(len(self.rules))]  # fmt: skip
+        rule_args = [get_rule_args(indices) 
+                     for indices in rule_sample_indices]  # fmt: skip
+        rule_outputs = [rule(args.to(rule.device)) if args is not None else None
+                        for rule, args in zip(self.rules, rule_args)]  # fmt: skip
+
+        # Add the new variables to the graph
+        for indices, outputs in zip(rule_sample_indices, rule_outputs):
+            if outputs is not None:
+                outputs = outputs.to(self.vars.device)
+                self.vars[indices, self.num_vars[indices]] = outputs
+
+        # Create filtered versions of variables for convenience
+        num_actions = self.num_actions[updated_indices]
+        num_vars = self.num_vars[updated_indices]
+        rules_indices = rule_indices[updated_indices]
+        arg_mask = arg_mask[updated_indices]
+
+        # Add the new rule nodes to the graph
+        self.applied_rules[updated_indices, num_actions] = rules_indices
 
         # Update the connectivity
         mask = torch.zeros_like(self.vars_to_rules, dtype=torch.bool)
-        mask[modifying, :, num_actions] = arg_mask
+        mask[updated_indices, :, num_actions] = arg_mask
         self.vars_to_rules[mask] = 1
-        self.rules_to_vars[modifying, num_actions, num_vars] = 1
+        self.rules_to_vars[updated_indices, num_actions, num_vars] = 1
 
         # Increment the number of actions
-        self._num_actions[modifying] += 1
+        self._num_actions[updated_indices] += 1
 
     def backward_action(self, removal_indices: torch.LongTensor) -> Self:
         assert len(removal_indices) > 0
