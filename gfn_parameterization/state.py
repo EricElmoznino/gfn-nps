@@ -1,9 +1,10 @@
 from abc import ABC, abstractmethod
+from copy import deepcopy
 from typing_extensions import Self
 
 import torch
 from torch import nn
-from torch import BoolTensor, LongTensor, FloatTensor
+from torch import Tensor, BoolTensor, LongTensor
 
 from rules import Rule
 
@@ -35,21 +36,16 @@ class DAGState(State):
     def __init__(
         self,
         max_actions: int,
-        initial_vars: FloatTensor,
+        initial_vars: Tensor,
         rules: list[Rule],
     ) -> None:
+        super().__init__()
+
         self.max_actions = max_actions
         self.rules = rules
 
         batch_size = initial_vars.shape[0]
-        self.register_buffer(
-            "_num_init_vars",
-            torch.full(
-                (batch_size,),
-                fill_value=initial_vars.shape[1],
-                dtype=torch.long,
-            ),
-        )
+        self._num_init_vars = initial_vars.shape[1]
         self.register_buffer(
             "_num_actions",
             torch.zeros(batch_size, dtype=torch.long),
@@ -65,6 +61,7 @@ class DAGState(State):
                         batch_size,
                         max_actions,
                         *initial_vars.shape[2:],  # var shape
+                        dtype=initial_vars.dtype,
                     ),
                 ],
                 dim=1,
@@ -119,7 +116,7 @@ class DAGState(State):
     def leaf_mask(self) -> BoolTensor:
         var_range = torch.arange(self.vars.shape[1], device=self.vars.device)
         is_var = var_range.unsqueeze(0) < self.num_vars.unsqueeze(1)
-        leafs = is_var & self.vars_to_rules.sum(dim=2) == 0
+        leafs = is_var & (self.vars_to_rules.sum(dim=2) == 0)
         return leafs
 
     def forward_action(
@@ -128,62 +125,93 @@ class DAGState(State):
         arg_mask: BoolTensor,
         arg_order: LongTensor,
     ) -> Self:
-        sample_indices = torch.arange(self.batch_size, device=self.vars.device)
+        state = self.clone()
+
+        sample_indices = torch.arange(state.batch_size, device=state.vars.device)
+        var_indices = torch.arange(state.vars.shape[1], device=state.vars.device)
         updated_indices = sample_indices[rule_indices != -1]
-        assert len(updated_indices) > 0
-        assert self.num_actions[updated_indices].max() < self.max_actions
+        assert len(updated_indices) > 0, "Must be updating at least one sample"
+        assert (
+            state.num_actions[updated_indices].max() < state.max_actions
+        ), "One of the samples being updated is already at max_actions"
+        assert (
+            arg_mask[updated_indices].sum(dim=1) > 0
+        ).all(), "One of the samples being updated has no rule arguments"
+        assert (
+            (var_indices * arg_mask[updated_indices]).max(dim=1).values
+            < state.num_vars[updated_indices]
+        ).all(), "One of the samples being updated is using an argument beyong the number of variables available"
 
         # Apply the rules
         # *Note*: We run each rule on all its inputs. This looks
         # serial, but it will actually parallelize automatically if
         # the rules are on different GPUs because GPU operations are
         # asynchronous.
-        def get_rule_args(indices: LongTensor) -> FloatTensor:
-            if len(indices) == 0:
+        def get_rule_args(indices: LongTensor) -> Tensor:
+            num_samples = len(indices)
+            if num_samples == 0:
                 return None
-            args = self.vars[indices]
-            args = args[arg_mask[indices]]
-            args = args[arg_order[indices, : args.shape[1]]]
+            args = state.vars[indices]  # Select batch samples using this rule
+            args = args[arg_mask[indices]].view(
+                num_samples, -1, *state.var_shape
+            )  # Select rule arguments for each sample
+            args = args[
+                [[i] for i in range(num_samples)],
+                arg_order[indices, : args.shape[1]],
+            ]  # Reorder the arguments for each sample
             return args
 
         rule_sample_indices = [sample_indices[rule_indices == i] 
-                               for i in range(len(self.rules))]  # fmt: skip
+                               for i in range(len(state.rules))]  # fmt: skip
         rule_args = [get_rule_args(indices) 
                      for indices in rule_sample_indices]  # fmt: skip
         rule_outputs = [rule(args.to(rule.device)) if args is not None else None
-                        for rule, args in zip(self.rules, rule_args)]  # fmt: skip
+                        for rule, args in zip(state.rules, rule_args)]  # fmt: skip
 
         # Add the new variables to the graph
         for indices, outputs in zip(rule_sample_indices, rule_outputs):
             if outputs is not None:
-                outputs = outputs.to(self.vars.device)
-                self.vars[indices, self.num_vars[indices]] = outputs
+                outputs = outputs.to(state.vars.device)
+                state.vars[indices, state.num_vars[indices]] = outputs
 
         # Create filtered versions of variables for convenience
-        num_actions = self.num_actions[updated_indices]
-        num_vars = self.num_vars[updated_indices]
+        num_actions = state.num_actions[updated_indices]
+        num_vars = state.num_vars[updated_indices]
         rules_indices = rule_indices[updated_indices]
         arg_mask = arg_mask[updated_indices]
 
         # Add the new rule nodes to the graph
-        self.applied_rules[updated_indices, num_actions] = rules_indices
+        state.applied_rules[updated_indices, num_actions] = rules_indices
 
         # Update the connectivity
-        mask = torch.zeros_like(self.vars_to_rules, dtype=torch.bool)
+        mask = torch.zeros_like(state.vars_to_rules, dtype=torch.bool)
         mask[updated_indices, :, num_actions] = arg_mask
-        self.vars_to_rules[mask] = 1
-        self.rules_to_vars[updated_indices, num_actions, num_vars] = 1
+        state.vars_to_rules[mask] = 1
+        state.rules_to_vars[updated_indices, num_actions, num_vars] = 1
 
         # Increment the number of actions
-        self._num_actions[updated_indices] += 1
+        state._num_actions[updated_indices] += 1
+
+        return state
 
     def backward_action(self, removal_indices: torch.LongTensor) -> Self:
-        assert len(removal_indices) > 0
-        modifying = torch.arange(self.batch_size, device=self.vars.device)
-        modifying = modifying[removal_indices != -1]
-        assert self.num_actions[modifying].min() > 0
-        removal_indices = removal_indices[modifying]
-        assert self.leaf_mask[modifying, removal_indices].all()
+        state = self.clone()
+
+        sample_indices = torch.arange(state.batch_size, device=state.vars.device)
+        updated_indices = sample_indices[removal_indices != -1]
+        assert (
+            len(updated_indices) > 0
+        ), "Must be removing variable for at least one sample"
+        assert (
+            state.num_actions[updated_indices].min() > 0
+        ), "Cannot remove more variables than have been added"
+        removal_indices = removal_indices[updated_indices]
+        assert state.leaf_mask[
+            updated_indices, removal_indices
+        ].all(), "Can only remove leaf variables"
+        assert (
+            removal_indices[updated_indices] >= state._num_init_vars
+        ).all(), "Cannot remove initial variables"
 
         def shift_down(x, idx, dim):
             x_range = torch.arange(x.shape[dim], device=x.device)
@@ -203,33 +231,47 @@ class DAGState(State):
 
         # Remove the variable and the parent rule node that produced it
         # (we shift all variables and rules that come after removal_indices down by 1)
-        self.vars[modifying] = shift_down(self.vars[modifying], removal_indices, dim=1)
-        parent_rule = self.rules_to_vars[modifying, :, removal_indices].argmax(dim=1)
-        self.applied_rules[modifying] = shift_down(
-            self.appied_rules[modifying], parent_rule, dim=1
+        state.vars[updated_indices] = shift_down(
+            state.vars[updated_indices], removal_indices, dim=1
+        )
+        parent_rule = state.rules_to_vars[updated_indices, :, removal_indices].argmax(
+            dim=1
+        )
+        state.applied_rules[updated_indices] = shift_down(
+            state.applied_rules[updated_indices], parent_rule, dim=1
         )
 
         # Update the connectivity
         # (we shift all variables and rules that come after removal_indices down by 1)
-        self.vars_to_rules[modifying] = shift_down(
-            self.vars_to_rules[modifying], removal_indices, dim=1
+        state.vars_to_rules[updated_indices] = shift_down(
+            state.vars_to_rules[updated_indices], removal_indices, dim=1
         )
-        self.vars_to_rule[modifying] = shift_down(
-            self.vars_to_rules[modifying], parent_rule, dim=2
+        state.vars_to_rules[updated_indices] = shift_down(
+            state.vars_to_rules[updated_indices], parent_rule, dim=2
         )
-        self.rules_to_vars[modifying] = shift_down(
-            self.rules_to_vars[modifying], parent_rule, dim=1
+        state.rules_to_vars[updated_indices] = shift_down(
+            state.rules_to_vars[updated_indices], parent_rule, dim=1
         )
-        self.rules_to_vars[modifying] = shift_down(
-            self.rules_to_vars[modifying], removal_indices, dim=2
+        state.rules_to_vars[updated_indices] = shift_down(
+            state.rules_to_vars[updated_indices], removal_indices, dim=2
         )
 
         # Decrement the number of actions
-        self._num_actions[modifying] -= 1
+        state._num_actions[updated_indices] -= 1
+
+        return state
+
+    def clone(self) -> Self:
+        state = type(self)(
+            self.max_actions, self.vars[:, : self._num_init_vars], self.rules
+        )
+        for attr, value in self._buffers.items():
+            state._buffers[attr] = value.clone()
+        return state
 
 
 class SingleOutputDAGState(DAGState):
-    def output(self) -> tuple(FloatTensor, BoolTensor):
+    def output(self) -> tuple[Tensor, BoolTensor]:
         num_leafs = self.leaf_mask.sum(dim=1)
         is_valid = num_leafs == 1
 

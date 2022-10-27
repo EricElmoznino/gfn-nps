@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing_extensions import Self
 
 import torch
-from torch import nn, FloatTensor
+from torch import nn, Tensor
 
 
 class Rule(nn.Module, ABC):
@@ -23,12 +23,14 @@ class Rule(nn.Module, ABC):
         self.device = device
         _ = self.to(device)
 
-    def forward(self, vars: FloatTensor) -> FloatTensor:
+    def forward(self, vars: Tensor) -> Tensor:
         assert vars.shape[1:] == (self.num_args, *self.var_shape)
-        return self.rule(vars)
+        output_var = self.apply(vars)
+        assert output_var.shape[1:] == self.var_shape
+        return output_var
 
     @abstractmethod
-    def apply(self, vars: FloatTensor) -> FloatTensor:
+    def apply(self, vars: Tensor) -> Tensor:
         pass
 
     def to(self, device: torch.device, *args, **kwargs) -> Self:
