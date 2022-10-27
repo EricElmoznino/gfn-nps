@@ -3,7 +3,7 @@ import pytest
 
 import torch
 
-from gfn_parameterization.state import DAGState, SingleOutputDAGState
+from gfn_parameterization.states import DAGState, SingleOutputDAGState
 from tests.rules.test_base import DummyRule, DummyRuleToken
 
 
@@ -352,3 +352,72 @@ class TestDAGState:
 
         state_next.vars.sum().backward()
         assert state.vars.grad is not None
+
+
+class TestSingleOutputDAGState:
+
+    state_float = SingleOutputDAGState(
+        max_actions=4,
+        initial_vars=torch.randn(2, 2, 3, 4),
+        rules=[
+            DummyRule(
+                num_args=i % 3 + 1,
+                var_shape=(3, 4),
+                embedding_size=32,
+            )
+            for i in range(3)
+        ],
+    )
+    state_int = SingleOutputDAGState(
+        max_actions=4,
+        initial_vars=torch.ones(2, 2, dtype=torch.long),
+        rules=[
+            DummyRuleToken(
+                num_args=i % 3 + 1,
+                var_shape=(),
+                embedding_size=32,
+            )
+            for i in range(3)
+        ],
+    )
+
+    @pytest.mark.parametrize("state", [state_float, state_int])
+    def test_output(self, state: SingleOutputDAGState):
+        # b0: r1(v0, v1) -> v2
+        # b1: r1(v0, v1) -> v2
+        #     r1(v0, v1) -> v3
+        state = state.forward_action(
+            rule_indices=torch.tensor([1, 1]),
+            arg_mask=torch.tensor(
+                [
+                    [True, True, False, False, False, False],
+                    [True, True, False, False, False, False],
+                ]
+            ),
+            arg_order=torch.tensor(
+                [
+                    [0, 1, -1, -1, -1, -1],
+                    [0, 1, -1, -1, -1, -1],
+                ]
+            ),
+        )
+        state = state.forward_action(
+            rule_indices=torch.tensor([-1, 1]),
+            arg_mask=torch.tensor(
+                [
+                    [False, False, False, False, False, False],
+                    [True, True, False, False, False, False],
+                ]
+            ),
+            arg_order=torch.tensor(
+                [
+                    [-1, -1, -1, -1, -1, -1],
+                    [0, 1, -1, -1, -1, -1],
+                ]
+            ),
+        )
+
+        outputs, is_valid = state.output()
+        assert (is_valid == torch.tensor([True, False])).all()
+        assert (outputs[0] == state.vars[0, 2]).all()
+        assert (outputs[1] == 0).all()

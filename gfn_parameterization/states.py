@@ -275,7 +275,7 @@ class SingleOutputDAGState(DAGState):
         num_leafs = self.leaf_mask.sum(dim=1)
         is_valid = num_leafs == 1
 
-        out = torch.full_like(self.vars[:, 0], fill_value=torch.nan)
+        out = torch.zeros_like(self.vars[:, 0])
         selected_vars = self.leaf_mask[is_valid].long().argmax(dim=1)
         out[is_valid] = self.vars[is_valid, selected_vars]
 
