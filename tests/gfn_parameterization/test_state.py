@@ -95,18 +95,7 @@ class TestDAGState:
         # b1: r0(v0) -> v2
         state = state.forward_action(
             rule_indices=torch.tensor([1, 0]),
-            arg_mask=torch.tensor(
-                [
-                    [True, True, False, False, False, False],
-                    [True, False, False, False, False, False],
-                ]
-            ),
-            arg_order=torch.tensor(
-                [
-                    [1, 0, -1, -1, -1, -1],
-                    [0, -1, -1, -1, -1, -1],
-                ]
-            ),
+            arg_indices=torch.tensor([[1, 0, -1], [0, -1, -1]]),
         )
         assert (state.num_vars == torch.ones(2, dtype=torch.long) * 3).all()
         assert (state.num_actions == torch.ones(2, dtype=torch.long)).all()
@@ -121,7 +110,8 @@ class TestDAGState:
         true_applied_rules[0, 0] = 1
         true_applied_rules[1, 0] = 0
         assert (state.applied_rules == true_applied_rules).all()
-        true_vars_to_rules[0, [0, 1], 0] = 1
+        true_vars_to_rules[0, 0, 0] = 2
+        true_vars_to_rules[0, 1, 0] = 1
         true_vars_to_rules[1, 0, 0] = 1
         assert (state.vars_to_rules == true_vars_to_rules).all()
         true_rules_to_vars[[0, 1], 0, 2] = 1
@@ -132,18 +122,7 @@ class TestDAGState:
         # b1: r0(v0) -> v2
         state = state.forward_action(
             rule_indices=torch.tensor([2, -1]),
-            arg_mask=torch.tensor(
-                [
-                    [True, True, True, False, False, False],
-                    [False, False, False, False, False, False],
-                ]
-            ),
-            arg_order=torch.tensor(
-                [
-                    [2, 1, 0, -1, -1, -1],
-                    [-1, -1, -1, -1, -1, -1],
-                ]
-            ),
+            arg_indices=torch.tensor([[2, 1, 0], [-1, -1, -1]]),
         )
         assert (state.num_vars == torch.tensor([4, 3])).all()
         assert (state.num_actions == torch.tensor([2, 1])).all()
@@ -154,7 +133,9 @@ class TestDAGState:
         assert (state.vars == true_vars).all()
         true_applied_rules[0, 1] = 2
         assert (state.applied_rules == true_applied_rules).all()
-        true_vars_to_rules[0, [0, 1, 2], 1] = 1
+        true_vars_to_rules[0, 0, 1] = 3
+        true_vars_to_rules[0, 1, 1] = 2
+        true_vars_to_rules[0, 2, 1] = 1
         assert (state.vars_to_rules == true_vars_to_rules).all()
         true_rules_to_vars[0, 1, 3] = 1
         assert (state.rules_to_vars == true_rules_to_vars).all()
@@ -167,16 +148,19 @@ class TestDAGState:
         ):
             _ = state.forward_action(
                 rule_indices=torch.tensor([-1, -1]),
-                arg_mask=torch.zeros(2, 6, dtype=torch.bool),
-                arg_order=torch.zeros(2, 6, dtype=torch.long),
+                arg_indices=torch.tensor([[-1], [-1]]),
             )
 
         # No arguments for a rule
         with pytest.raises(AssertionError, match="has no rule arguments"):
             _ = state.forward_action(
                 rule_indices=torch.tensor([0, -1]),
-                arg_mask=torch.zeros(2, 6, dtype=torch.bool),
-                arg_order=torch.zeros(2, 6, dtype=torch.long),
+                arg_indices=torch.tensor([[-1], [-1]]),
+            )
+        with pytest.raises(AssertionError, match="has no rule arguments"):
+            _ = state.forward_action(
+                rule_indices=torch.tensor([0, -1]),
+                arg_indices=torch.tensor([[], []]),
             )
 
         # Out of bounds argument
@@ -185,9 +169,8 @@ class TestDAGState:
             match="using an argument beyong the number of variables available",
         ):
             _ = state.forward_action(
-                rule_indices=torch.tensor([0, -1]),
-                arg_mask=torch.ones(2, 6, dtype=torch.bool),
-                arg_order=torch.zeros(2, 6, dtype=torch.long),
+                rule_indices=torch.tensor([1, -1]),
+                arg_indices=torch.tensor([[0, 2], [-1, -1]]),
             )
 
         # Reached maximum number of actions
@@ -196,8 +179,7 @@ class TestDAGState:
         for _ in range(state.max_actions):
             state = state.forward_action(
                 rule_indices=torch.tensor([0, -1]),
-                arg_mask=arg_mask,
-                arg_order=torch.zeros(2, 6, dtype=torch.long),
+                arg_indices=torch.tensor([[0], [-1]]),
             )
         with pytest.raises(
             AssertionError,
@@ -205,8 +187,7 @@ class TestDAGState:
         ):
             _ = state.forward_action(
                 rule_indices=torch.tensor([0, -1]),
-                arg_mask=arg_mask,
-                arg_order=torch.zeros(2, 6, dtype=torch.long),
+                arg_indices=torch.tensor([[0], [-1]]),
             )
 
     @pytest.mark.parametrize("state", [state_float, state_int])
@@ -217,33 +198,11 @@ class TestDAGState:
         #     r1(v0, v1) -> v3
         state = state.forward_action(
             rule_indices=torch.tensor([0, 1]),
-            arg_mask=torch.tensor(
-                [
-                    [False, True, False, False, False, False],
-                    [True, True, False, False, False, False],
-                ]
-            ),
-            arg_order=torch.tensor(
-                [
-                    [0, -1, -1, -1, -1, -1],
-                    [0, 1, -1, -1, -1, -1],
-                ]
-            ),
+            arg_indices=torch.tensor([[1, -1], [0, 1]]),
         )
         state = state.forward_action(
             rule_indices=torch.tensor([-1, 1]),
-            arg_mask=torch.tensor(
-                [
-                    [False, False, False, False, False, False],
-                    [True, True, False, False, False, False],
-                ]
-            ),
-            arg_order=torch.tensor(
-                [
-                    [-1, -1, -1, -1, -1, -1],
-                    [0, 1, -1, -1, -1, -1],
-                ]
-            ),
+            arg_indices=torch.tensor([[-1, -1], [0, 1]]),
         )
 
         # b0: v0, v1
@@ -262,7 +221,8 @@ class TestDAGState:
         true_applied_rules[1, 0] = 1
         assert (new_state.applied_rules == true_applied_rules).all()
         true_vars_to_rules = torch.zeros_like(state.vars_to_rules)
-        true_vars_to_rules[1, [0, 1], 0] = 1
+        true_vars_to_rules[1, 0, 0] = 1
+        true_vars_to_rules[1, 1, 0] = 2
         assert (new_state.vars_to_rules == true_vars_to_rules).all()
         true_rules_to_vars = torch.zeros_like(state.rules_to_vars)
         true_rules_to_vars[1, 0, 2] = 1
@@ -274,18 +234,7 @@ class TestDAGState:
         # b1: r1(v0, v1) -> v2
         state = state.forward_action(
             rule_indices=torch.tensor([-1, 1]),
-            arg_mask=torch.tensor(
-                [
-                    [False, False, False, False, False, False],
-                    [True, True, False, False, False, False],
-                ]
-            ),
-            arg_order=torch.tensor(
-                [
-                    [-1, -1, -1, -1, -1, -1],
-                    [0, 1, -1, -1, -1, -1],
-                ]
-            ),
+            arg_indices=torch.tensor([[-1, -1], [0, 1]]),
         )
 
         # Not removing any variables
@@ -305,18 +254,7 @@ class TestDAGState:
         #     r1(v1, v2) -> v3
         state = state.forward_action(
             rule_indices=torch.tensor([0, 1]),
-            arg_mask=torch.tensor(
-                [
-                    [False, True, False, False, False, False],
-                    [False, True, True, False, False, False],
-                ]
-            ),
-            arg_order=torch.tensor(
-                [
-                    [0, -1, -1, -1, -1, -1],
-                    [0, 1, -1, -1, -1, -1],
-                ]
-            ),
+            arg_indices=torch.tensor([[1, -1], [1, 2]]),
         )
 
         # Trying to remove non-leaf variable
@@ -337,33 +275,11 @@ class TestDAGState:
         #     r1(v0, v1) -> v3
         state_next = state.forward_action(
             rule_indices=torch.tensor([0, 1]),
-            arg_mask=torch.tensor(
-                [
-                    [False, True, False, False, False, False],
-                    [True, True, False, False, False, False],
-                ]
-            ),
-            arg_order=torch.tensor(
-                [
-                    [0, -1, -1, -1, -1, -1],
-                    [0, 1, -1, -1, -1, -1],
-                ]
-            ),
+            arg_indices=torch.tensor([[1, -1], [0, 1]]),
         )
         state_next = state_next.forward_action(
             rule_indices=torch.tensor([-1, 1]),
-            arg_mask=torch.tensor(
-                [
-                    [False, False, False, False, False, False],
-                    [True, True, False, False, False, False],
-                ]
-            ),
-            arg_order=torch.tensor(
-                [
-                    [-1, -1, -1, -1, -1, -1],
-                    [0, 1, -1, -1, -1, -1],
-                ]
-            ),
+            arg_indices=torch.tensor([[-1, -1], [0, 1]]),
         )
 
         state_next.vars.sum().backward()
@@ -404,33 +320,11 @@ class TestSingleOutputDAGState:
         #     r1(v0, v1) -> v3
         state = state.forward_action(
             rule_indices=torch.tensor([1, 1]),
-            arg_mask=torch.tensor(
-                [
-                    [True, True, False, False, False, False],
-                    [True, True, False, False, False, False],
-                ]
-            ),
-            arg_order=torch.tensor(
-                [
-                    [0, 1, -1, -1, -1, -1],
-                    [0, 1, -1, -1, -1, -1],
-                ]
-            ),
+            arg_indices=torch.tensor([[0, 1], [0, 1]]),
         )
         state = state.forward_action(
             rule_indices=torch.tensor([-1, 1]),
-            arg_mask=torch.tensor(
-                [
-                    [False, False, False, False, False, False],
-                    [True, True, False, False, False, False],
-                ]
-            ),
-            arg_order=torch.tensor(
-                [
-                    [-1, -1, -1, -1, -1, -1],
-                    [0, 1, -1, -1, -1, -1],
-                ]
-            ),
+            arg_indices=torch.tensor([[-1, -1], [0, 1]]),
         )
 
         outputs, is_valid = state.output()

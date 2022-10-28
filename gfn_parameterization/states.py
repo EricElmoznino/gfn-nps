@@ -130,24 +130,22 @@ class DAGState(State):
     def forward_action(
         self,
         rule_indices: torch.LongTensor,
-        arg_mask: BoolTensor,
-        arg_order: LongTensor,
+        arg_indices: LongTensor,
     ) -> Self:
         state = self.clone()
 
         sample_indices = torch.arange(state.batch_size, device=state.vars.device)
-        var_indices = torch.arange(state.vars.shape[1], device=state.vars.device)
         updated_indices = sample_indices[rule_indices != -1]
         assert len(updated_indices) > 0, "Must be updating at least one sample"
         assert (
             state.num_actions[updated_indices].max() < state.max_actions
         ), "One of the samples being updated is already at max_actions"
         assert (
-            arg_mask[updated_indices].sum(dim=1) > 0
-        ).all(), "One of the samples being updated has no rule arguments"
+            arg_indices.shape[1] > 0
+            and ((arg_indices[updated_indices] != -1).sum(dim=1) > 0).all()
+        ), "One of the samples being updated has no rule arguments"
         assert (
-            (var_indices * arg_mask[updated_indices]).max(dim=1).values
-            < state.num_vars[updated_indices]
+            arg_indices.max(dim=1).values < state.num_vars[updated_indices]
         ).all(), "One of the samples being updated is using an argument beyong the number of variables available"
 
         # Apply the rules
@@ -155,24 +153,23 @@ class DAGState(State):
         # serial, but it will actually parallelize automatically if
         # the rules are on different GPUs because GPU operations are
         # asynchronous.
-        def get_rule_args(indices: LongTensor) -> Tensor:
+        def get_rule_args(rule_index: int) -> Tensor:
+            # Selects the arguments for a rule in the correct order
+            indices = rule_sample_indices[rule_index]
             num_samples = len(indices)
             if num_samples == 0:
                 return None
-            args = state.vars[indices]  # Select batch samples using this rule
-            args = args[arg_mask[indices]].view(
-                num_samples, -1, *state.var_shape
-            )  # Select rule arguments for each sample
-            args = args[
-                [[i] for i in range(num_samples)],
-                arg_order[indices, : args.shape[1]],
-            ]  # Reorder the arguments for each sample
+            num_args = state.rules[rule_index].num_args
+            args = state.vars[
+                indices.unsqueeze(1),
+                arg_indices[indices, :num_args],
+            ]
             return args
 
         rule_sample_indices = [sample_indices[rule_indices == i] 
                                for i in range(len(state.rules))]  # fmt: skip
-        rule_args = [get_rule_args(indices) 
-                     for indices in rule_sample_indices]  # fmt: skip
+        rule_args = [get_rule_args(i) 
+                     for i in range(len(state.rules))]  # fmt: skip
         rule_outputs = [rule(args.to(rule.device)) if args is not None else None
                         for rule, args in zip(state.rules, rule_args)]  # fmt: skip
 
@@ -182,20 +179,29 @@ class DAGState(State):
                 outputs = outputs.to(state.vars.device)
                 state.vars[indices, state.num_vars[indices]] = outputs
 
-        # Create filtered versions of variables for convenience
-        num_actions = state.num_actions[updated_indices]
-        num_vars = state.num_vars[updated_indices]
-        rules_indices = rule_indices[updated_indices]
-        arg_mask = arg_mask[updated_indices]
-
         # Add the new rule nodes to the graph
-        state.applied_rules[updated_indices, num_actions] = rules_indices
+        state.applied_rules[
+            updated_indices,
+            state.num_actions[updated_indices],
+        ] = rule_indices[updated_indices]
 
         # Update the connectivity
-        mask = torch.zeros_like(state.vars_to_rules, dtype=torch.bool)
-        mask[updated_indices, :, num_actions] = arg_mask
-        state.vars_to_rules[mask] = 1
-        state.rules_to_vars[updated_indices, num_actions, num_vars] = 1
+        for i in range(arg_indices.shape[1]):
+            arg_num = i + 1
+            arg_num_var_indices = arg_indices[:, i]
+            arg_num_sample_indices = sample_indices[arg_num_var_indices != -1]
+            if len(arg_num_sample_indices) == 0:
+                break
+            state.vars_to_rules[
+                arg_num_sample_indices,
+                arg_num_var_indices[arg_num_sample_indices],
+                state.num_actions[arg_num_sample_indices],
+            ] = arg_num
+        state.rules_to_vars[
+            updated_indices,
+            state.num_actions[updated_indices],
+            state.num_vars[updated_indices],
+        ] = 1
 
         # Increment the number of actions
         state._num_actions[updated_indices] += 1
