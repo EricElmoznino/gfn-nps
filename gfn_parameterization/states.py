@@ -113,10 +113,18 @@ class DAGState(State):
         return self._num_actions
 
     @property
-    def leaf_mask(self) -> BoolTensor:
+    def var_mask(self) -> BoolTensor:
         var_range = torch.arange(self.vars.shape[1], device=self.vars.device)
-        is_var = var_range.unsqueeze(0) < self.num_vars.unsqueeze(1)
-        leafs = is_var & (self.vars_to_rules.sum(dim=2) == 0)
+        return var_range.unsqueeze(0) < self.num_vars.unsqueeze(1)
+
+    @property
+    def applied_rule_mask(self) -> BoolTensor:
+        applied_rules_range = torch.arange(self.max_actions, device=self.vars.device)
+        return applied_rules_range.unsqueeze(0) < self.num_actions.unsqueeze(1)
+
+    @property
+    def leaf_mask(self) -> BoolTensor:
+        leafs = self.var_mask & (self.vars_to_rules.sum(dim=2) == 0)
         return leafs
 
     def forward_action(

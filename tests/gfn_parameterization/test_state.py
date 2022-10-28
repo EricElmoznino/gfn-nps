@@ -40,6 +40,14 @@ class TestDAGState:
         assert (self.state_float.num_vars == torch.ones(2, dtype=torch.long) * 2).all()
         assert (self.state_float.num_actions == torch.zeros(2, dtype=torch.long)).all()
         assert (
+            self.state_float.var_mask
+            == torch.tensor([[True, True, False, False, False, False]] * 2)
+        ).all()
+        assert (
+            self.state_float.applied_rule_mask
+            == torch.zeros_like(self.state_float.applied_rules, dtype=torch.bool)
+        ).all()
+        assert (
             self.state_float.leaf_mask
             == torch.tensor([[True, True, False, False, False, False]] * 2)
         ).all()
@@ -52,6 +60,14 @@ class TestDAGState:
         assert self.state_int.var_shape == ()
         assert (self.state_int.num_vars == torch.ones(2, dtype=torch.long) * 2).all()
         assert (self.state_int.num_actions == torch.zeros(2, dtype=torch.long)).all()
+        assert (
+            self.state_int.var_mask
+            == torch.tensor([[True, True, False, False, False, False]] * 2)
+        ).all()
+        assert (
+            self.state_int.applied_rule_mask
+            == torch.zeros_like(self.state_int.applied_rules, dtype=torch.bool)
+        ).all()
         assert (
             self.state_int.leaf_mask
             == torch.tensor([[True, True, False, False, False, False]] * 2)
