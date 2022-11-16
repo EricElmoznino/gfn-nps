@@ -4,7 +4,8 @@ import torch
 from torch import nn
 from torch import FloatTensor
 
-from gfn_parameterization.states import State
+from environment.states import State
+from environment.actions import BackwardAction
 
 
 class BackwardPolicy(nn.Module, ABC):
@@ -13,5 +14,5 @@ class BackwardPolicy(nn.Module, ABC):
         pass
 
     @abstractmethod
-    def forward(self, state: State) -> tuple[State, FloatTensor]:
+    def forward(self, state: State) -> tuple[BackwardAction, FloatTensor]:
         pass
