@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from typing import Any
 
 import torch
 from torch import nn
@@ -9,10 +10,15 @@ from environment.actions import BackwardAction
 
 
 class BackwardPolicy(nn.Module, ABC):
-    @abstractmethod
-    def __init__(self, example_state: State, *args, **kwargs) -> None:
-        pass
+    def __init__(self, uses_representation: bool = False) -> None:
+        super().__init__()
+        self.uses_representation = uses_representation
 
     @abstractmethod
-    def forward(self, state: State) -> tuple[BackwardAction, FloatTensor]:
-        pass
+    def forward(
+        self, state: State, representation: Any | None = None
+    ) -> tuple[BackwardAction, FloatTensor]:
+        if self.uses_representation:
+            assert representation is not None, "Policy requires a state representation"
+        else:
+            assert representation is None, "Policy does not use a state representation"

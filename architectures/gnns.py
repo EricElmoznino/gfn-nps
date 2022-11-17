@@ -1,7 +1,6 @@
 from typing import Literal
 
 from torch import nn
-
 from torch_geometric.nn import GAT, GCNConv
 
 # See https://pytorch-geometric.readthedocs.io/en/latest/notes/installation.html to install the GNN libraries
@@ -22,6 +21,6 @@ class GNN(nn.Module):
         self.out_channels = out_channels
         self.num_layers = num_layers
         self.kind = kind
-        
+
         if kind == "gcn":
             pass
